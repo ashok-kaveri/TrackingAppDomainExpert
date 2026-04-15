@@ -7,16 +7,16 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PORT=8504
+PORT=8503
 
 echo "=============================================="
-echo " TrackingAppDomainExpert"
+echo " TrackingAppDomainExpert Pipeline Dashboard"
 echo " Public URL: https://buffing-federal-swifter.ngrok-free.dev"
 echo "=============================================="
 
 # Start Streamlit in the background
 echo "Starting Streamlit on port $PORT..."
-PYTHONPATH=. .venv/bin/streamlit run ui/chat_app.py \
+PYTHONPATH=. .venv/bin/streamlit run ui/pipeline_dashboard.py \
   --server.port $PORT \
   --server.headless true &
 STREAMLIT_PID=$!
