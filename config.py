@@ -75,6 +75,11 @@ GOOGLE_CREDENTIALS_PATH = os.getenv(
     "GOOGLE_CREDENTIALS_PATH", str(BASE_DIR / "credentials.json")
 )
 
+# Trello
+TRELLO_API_KEY = os.getenv("TRELLO_API_KEY", "")
+TRELLO_TOKEN = os.getenv("TRELLO_TOKEN", "")
+TRELLO_BOARD_ID = os.getenv("TRELLO_BOARD_ID", "")
+
 # RAG settings
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50

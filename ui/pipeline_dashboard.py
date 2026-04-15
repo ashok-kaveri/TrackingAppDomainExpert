@@ -12,6 +12,9 @@ from pathlib import Path
 # Ensure project root is on sys.path when launched via `streamlit run ui/pipeline_dashboard.py`
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import os
+import re
+
 import chromadb
 import requests
 import streamlit as st
@@ -168,13 +171,44 @@ def _check_paths() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Trello helpers
+# ---------------------------------------------------------------------------
+
+def _status_badge(label: str, ok: bool, hint: str = "") -> str:
+    icon = "✅" if ok else "❌"
+    detail = f"<br><span style='font-size:0.7rem;color:#9ca3af'>{hint}</span>" if (not ok and hint) else ""
+    return f"<div style='font-size:0.8rem;margin:2px 0'>{icon} {label}{detail}</div>"
+
+
+@st.cache_data(ttl=120)
+def _get_board_lists() -> list[tuple[str, str]]:
+    """Cached fetch of all Trello board lists — returns (name, id) pairs."""
+    from pipeline.trello_client import TrelloClient
+    return [(l.name, l.id) for l in TrelloClient().get_lists()]
+
+
+# ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
 
 def _render_sidebar() -> None:
+    trello_ok = all([config.TRELLO_API_KEY, config.TRELLO_TOKEN, config.TRELLO_BOARD_ID])
+    sheets_ok = bool(os.path.exists(config.GOOGLE_CREDENTIALS_PATH))
+
     with st.sidebar:
         st.title("🔧 Pipeline Dashboard")
         st.caption("Tracking App Domain Expert")
+        st.divider()
+
+        st.markdown("### ⚙️ System Status")
+        st.markdown(
+            _status_badge("Claude API", bool(config.ANTHROPIC_API_KEY), "Set ANTHROPIC_API_KEY") +
+            _status_badge("Trello", trello_ok, "Set TRELLO_* in .env") +
+            _status_badge("Google Sheets", sheets_ok, "Add credentials.json") +
+            _status_badge("Ollama Embeddings", True),
+            unsafe_allow_html=True,
+        )
+
         st.divider()
         st.markdown("[💬 Open Domain Expert Chat](http://localhost:8502)", unsafe_allow_html=False)
         st.divider()
@@ -399,11 +433,22 @@ def _render_sidebar() -> None:
 def main() -> None:
     _render_sidebar()
 
-    st.title("🔧 TrackingAppDomainExpert Pipeline")
-    st.caption("Monitor knowledge base health, trigger ingestion, and manage data sources.")
+    trello_ok = all([config.TRELLO_API_KEY, config.TRELLO_TOKEN, config.TRELLO_BOARD_ID])
+    sheets_ok = bool(os.path.exists(config.GOOGLE_CREDENTIALS_PATH))
 
-    tab_overview, tab_ingest, tab_sources, tab_config = st.tabs(
-        ["📊 Overview", "▶️ Run Ingest", "🗂️ Sources", "⚙️ Config"]
+    current_release = st.session_state.get("rqa_release", "")
+    release_badge = (
+        f"&nbsp;·&nbsp;<span style='color:#818cf8;font-size:0.85rem'>{current_release}</span>"
+        if current_release else ""
+    )
+    st.markdown(
+        f"<h1>🔧 TrackingAppDomainExpert Pipeline{release_badge}</h1>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Trello card → Test Cases → Automation → Run → Sign Off")
+
+    tab_overview, tab_ingest, tab_sources, tab_release, tab_config = st.tabs(
+        ["📊 Overview", "▶️ Run Ingest", "🗂️ Sources", "🚀 Release QA", "⚙️ Config"]
     )
 
     # -----------------------------------------------------------------------
@@ -624,7 +669,136 @@ def main() -> None:
                     st.rerun()
 
     # -----------------------------------------------------------------------
-    # TAB 4 — Config
+    # TAB 4 — Release QA (Trello card loading)
+    # -----------------------------------------------------------------------
+    with tab_release:
+        if not config.ANTHROPIC_API_KEY:
+            st.error("❌ ANTHROPIC_API_KEY not set — add it to .env")
+        elif not trello_ok:
+            st.error("❌ Trello credentials missing — set TRELLO_API_KEY, TRELLO_TOKEN, TRELLO_BOARD_ID in .env")
+        else:
+            from pipeline.trello_client import TrelloClient
+
+            if not sheets_ok:
+                st.info(
+                    "ℹ️ Google Sheets not connected — test cases will save to Trello only. "
+                    "Add `credentials.json` to enable sheet sync."
+                )
+
+            # ── ① Select Release ──────────────────────────────────────────
+            st.markdown("**① Select Release**")
+
+            if st.button("🔄 Refresh Trello lists", use_container_width=False):
+                st.cache_data.clear()
+                st.rerun()
+
+            col_list, col_load = st.columns([4, 1])
+            with col_list:
+                try:
+                    all_lists = _get_board_lists()
+
+                    show_all = st.toggle("Show all lists", value=False)
+                    if show_all:
+                        filtered_lists = all_lists
+                    else:
+                        filtered_lists = [
+                            (name, lid) for name, lid in all_lists
+                            if "ready for qa" in name.lower() or "qa" in name.lower()
+                        ]
+
+                    if not filtered_lists:
+                        filtered_lists = all_lists
+
+                    list_names = [name for name, _ in filtered_lists]
+                    default_idx = next(
+                        (i for i, n in enumerate(list_names)
+                         if "tracking" in n.lower() and "ready for qa" in n.lower()), 0
+                    )
+                    selected_list_name = st.selectbox(
+                        f"Select release list ({len(list_names)} lists)",
+                        list_names,
+                        index=default_idx,
+                    )
+                    selected_list_id = next(
+                        lid for name, lid in filtered_lists if name == selected_list_name
+                    )
+
+                except Exception as e:
+                    st.error(f"❌ Could not fetch Trello lists: {e}")
+                    selected_list_name = ""
+                    selected_list_id = ""
+
+            with col_load:
+                st.write("")
+                st.write("")
+                load_btn = st.button(
+                    "📥 Load Cards",
+                    use_container_width=True,
+                    disabled=not selected_list_id,
+                )
+
+            # ── Release version label ──────────────────────────────────────
+            def _extract_release(list_name: str) -> str:
+                m = re.search(r'(tracking\w*\s+[\d.]+)', list_name, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+                m2 = re.search(r'(v?[\d]+\.[\d]+[\d.]*)', list_name)
+                return m2.group(1) if m2 else list_name
+
+            if selected_list_name:
+                release_label = st.text_input(
+                    "🏷️ Release version",
+                    value=_extract_release(selected_list_name),
+                    placeholder="e.g. TrackingApp 2.3.116",
+                    help="Recorded in the 'Release' column of the master sheet",
+                )
+            else:
+                release_label = ""
+
+            # ── Load cards ────────────────────────────────────────────────
+            if load_btn and selected_list_id:
+                trello = TrelloClient()
+                with st.spinner(f"Loading cards from **{selected_list_name}**…"):
+                    cards = trello.get_cards_in_list(selected_list_id)
+                st.session_state["rqa_cards"] = cards
+                st.session_state["rqa_list_name"] = selected_list_name
+                st.session_state["rqa_release"] = release_label
+                st.success(f"✅ Loaded {len(cards)} card(s) from **{selected_list_name}**")
+                st.rerun()
+
+            # ── Display loaded cards ───────────────────────────────────────
+            if st.session_state.get("rqa_cards"):
+                cards = st.session_state["rqa_cards"]
+                loaded_list = st.session_state.get("rqa_list_name", "")
+
+                st.divider()
+                st.subheader(f"📦 {len(cards)} Cards — {loaded_list}")
+
+                for card in cards:
+                    with st.expander(f"🃏 {card.name}", expanded=False):
+                        col_a, col_b = st.columns([3, 1])
+                        with col_a:
+                            if card.desc:
+                                st.markdown(card.desc)
+                            else:
+                                st.caption("_(no description)_")
+                        with col_b:
+                            if card.labels:
+                                for lb in card.labels:
+                                    st.badge(lb)
+                            if card.url:
+                                st.markdown(f"[Open in Trello ↗]({card.url})")
+                        if card.checklists:
+                            for cl in card.checklists:
+                                st.markdown(f"**☑ {cl['name']}**")
+                                for item in cl.get("items", []):
+                                    icon = "✅" if item["state"] == "complete" else "⬜"
+                                    st.caption(f"{icon} {item['name']}")
+            elif not load_btn:
+                st.info("Select a release list above and click **📥 Load Cards** to begin.")
+
+    # -----------------------------------------------------------------------
+    # TAB 5 — Config
     # -----------------------------------------------------------------------
     with tab_config:
         st.subheader("Active Configuration")
@@ -659,6 +833,15 @@ def main() -> None:
             st.metric("Top-K Results", config.TOP_K_RESULTS)
         with col_r4:
             st.metric("Memory Window", config.MEMORY_WINDOW)
+
+        st.divider()
+        st.markdown("**Trello**")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.text_input("Trello API Key", value="***" if config.TRELLO_API_KEY else "(not set)", disabled=True)
+            st.text_input("Trello Board ID", value=config.TRELLO_BOARD_ID or "(not set)", disabled=True)
+        with col_t2:
+            st.text_input("Trello Token", value="***" if config.TRELLO_TOKEN else "(not set)", disabled=True)
 
         st.divider()
         st.markdown("**Seed URLs**")
