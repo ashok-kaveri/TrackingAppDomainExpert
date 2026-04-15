@@ -755,45 +755,155 @@ def main() -> None:
             else:
                 release_label = ""
 
-            # ── Load cards ────────────────────────────────────────────────
+            # ── Load cards + auto-validate ────────────────────────────────
             if load_btn and selected_list_id:
+                from pipeline.domain_validator import validate_card
                 trello = TrelloClient()
                 with st.spinner(f"Loading cards from **{selected_list_name}**…"):
                     cards = trello.get_cards_in_list(selected_list_id)
                 st.session_state["rqa_cards"] = cards
                 st.session_state["rqa_list_name"] = selected_list_name
                 st.session_state["rqa_release"] = release_label
-                st.success(f"✅ Loaded {len(cards)} card(s) from **{selected_list_name}**")
+                # Clear old validations
+                for c in cards:
+                    st.session_state.pop(f"validation_{c.id}", None)
+
+                # Auto-validate all cards
+                st.info(f"Loaded {len(cards)} cards — running Domain Expert validation…")
+                progress = st.progress(0)
+                for idx, c in enumerate(cards):
+                    with st.spinner(f"🧠 Validating '{c.name}'…"):
+                        st.session_state[f"validation_{c.id}"] = validate_card(
+                            card_name=c.name,
+                            card_desc=c.desc or "",
+                            acceptance_criteria=c.desc or "",
+                        )
+                    progress.progress((idx + 1) / len(cards))
+                progress.empty()
                 st.rerun()
 
             # ── Display loaded cards ───────────────────────────────────────
             if st.session_state.get("rqa_cards"):
+                from pipeline.domain_validator import validate_card, ValidationReport
                 cards = st.session_state["rqa_cards"]
                 loaded_list = st.session_state.get("rqa_list_name", "")
 
+                # ── Health summary metrics ─────────────────────────────────
                 st.divider()
-                st.subheader(f"📦 {len(cards)} Cards — {loaded_list}")
+                val_statuses = [st.session_state.get(f"validation_{c.id}") for c in cards]
+                n_pass   = sum(1 for v in val_statuses if v and v.overall_status == "PASS")
+                n_review = sum(1 for v in val_statuses if v and v.overall_status == "NEEDS_REVIEW")
+                n_fail   = sum(1 for v in val_statuses if v and v.overall_status == "FAIL")
+
+                hcols = st.columns(4)
+                hcols[0].metric("📦 Total Cards", len(cards))
+                hcols[1].metric("🟢 Pass", n_pass)
+                hcols[2].metric("🟡 Needs Review", n_review)
+                hcols[3].metric("🔴 Fail", n_fail)
+
+                st.divider()
+                st.subheader(f"Cards — {loaded_list}")
 
                 for card in cards:
-                    with st.expander(f"🃏 {card.name}", expanded=False):
-                        col_a, col_b = st.columns([3, 1])
-                        with col_a:
-                            if card.desc:
-                                st.markdown(card.desc)
-                            else:
-                                st.caption("_(no description)_")
+                    vr: ValidationReport | None = st.session_state.get(f"validation_{card.id}")
+                    val_icon = {"PASS": "🟢", "NEEDS_REVIEW": "🟡", "FAIL": "🔴"}.get(
+                        vr.overall_status if vr else "", "⚪"
+                    )
+
+                    with st.expander(f"{val_icon} {card.name}", expanded=(vr and vr.overall_status == "FAIL")):
+
+                        # Card meta row
+                        col_a, col_b = st.columns([5, 1])
                         with col_b:
                             if card.labels:
                                 for lb in card.labels:
                                     st.badge(lb)
                             if card.url:
                                 st.markdown(f"[Open in Trello ↗]({card.url})")
+
+                        with col_a:
+                            # ── Step 1: Requirements ───────────────────────
+                            st.markdown("**📋 Requirements**")
+                            if card.desc:
+                                st.markdown(card.desc[:600] + ("…" if len(card.desc) > 600 else ""))
+                            else:
+                                st.caption("_(No description on this card)_")
+
+                        # ── Step 2: Domain Expert Validation ───────────────
+                        st.markdown("---")
+                        st.markdown("**🧠 Domain Expert Validation**")
+
+                        if vr:
+                            status_color = {"PASS": "🟢", "NEEDS_REVIEW": "🟡", "FAIL": "🔴"}.get(
+                                vr.overall_status, "⚪"
+                            )
+                            st.markdown(f"{status_color} **{vr.overall_status}** — {vr.summary}")
+
+                            if vr.kb_insights:
+                                with st.expander("📚 Knowledge Base context", expanded=False):
+                                    st.markdown(vr.kb_insights)
+                                    if vr.sources:
+                                        st.caption("Sources: " + " · ".join(
+                                            f"[link]({s})" if s.startswith("http") else s
+                                            for s in vr.sources[:4]
+                                        ))
+
+                            has_issues = any([vr.requirement_gaps, vr.ac_gaps,
+                                              vr.accuracy_issues, vr.suggestions])
+                            if has_issues:
+                                c1, c2 = st.columns(2)
+                                with c1:
+                                    if vr.accuracy_issues:
+                                        st.error("**❌ Accuracy Issues**")
+                                        for issue in vr.accuracy_issues:
+                                            st.markdown(f"- {issue}")
+                                    if vr.requirement_gaps:
+                                        st.warning("**⚠️ Requirement Gaps**")
+                                        for gap in vr.requirement_gaps:
+                                            st.markdown(f"- {gap}")
+                                with c2:
+                                    if vr.ac_gaps:
+                                        st.warning("**📋 Missing AC Scenarios**")
+                                        for gap in vr.ac_gaps:
+                                            st.markdown(f"- {gap}")
+                                    if vr.suggestions:
+                                        st.info("**💡 Suggestions**")
+                                        for s in vr.suggestions:
+                                            st.markdown(f"- {s}")
+
+                                st.caption("👆 Fix the card on Trello, then re-validate below")
+                                if st.button("🔄 Re-validate after fix", key=f"reval_{card.id}"):
+                                    with st.spinner("Fetching updated card from Trello…"):
+                                        fresh = TrelloClient().get_card(card.id)
+                                    with st.spinner("Re-validating…"):
+                                        st.session_state[f"validation_{card.id}"] = validate_card(
+                                            card_name=fresh.name,
+                                            card_desc=fresh.desc or "",
+                                            acceptance_criteria=fresh.desc or "",
+                                        )
+                                        card.desc = fresh.desc
+                                    st.rerun()
+                            else:
+                                st.success("✅ Requirements & AC look complete")
+
+                        else:
+                            if st.button("🧠 Validate", key=f"val_{card.id}"):
+                                with st.spinner("Validating…"):
+                                    st.session_state[f"validation_{card.id}"] = validate_card(
+                                        card_name=card.name,
+                                        card_desc=card.desc or "",
+                                        acceptance_criteria=card.desc or "",
+                                    )
+                                st.rerun()
+
                         if card.checklists:
+                            st.markdown("---")
                             for cl in card.checklists:
                                 st.markdown(f"**☑ {cl['name']}**")
                                 for item in cl.get("items", []):
                                     icon = "✅" if item["state"] == "complete" else "⬜"
                                     st.caption(f"{icon} {item['name']}")
+
             elif not load_btn:
                 st.info("Select a release list above and click **📥 Load Cards** to begin.")
 
