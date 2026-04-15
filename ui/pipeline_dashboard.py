@@ -399,7 +399,7 @@ def _render_sidebar() -> None:
 def main() -> None:
     _render_sidebar()
 
-    st.title("🔧 Ingestion Pipeline Dashboard")
+    st.title("🔧 TrackingAppDomainExpert Pipeline")
     st.caption("Monitor knowledge base health, trigger ingestion, and manage data sources.")
 
     tab_overview, tab_ingest, tab_sources, tab_config = st.tabs(
