@@ -192,6 +192,205 @@ def _render_sidebar() -> None:
         st.caption(f"Top-K: `{config.TOP_K_RESULTS}`")
         st.caption(f"Memory window: `{config.MEMORY_WINDOW}` turns")
 
+        # ── Code Knowledge Base ───────────────────────────────────────────
+        st.divider()
+        st.markdown("### 🗂️ Code Knowledge Base")
+        st.caption("RAG over source code — TCs + automation scripts use real patterns.")
+
+        from rag.code_indexer import get_index_stats, index_codebase, sync_from_git, get_repo_info
+        _code_stats = get_index_stats()
+        _auto_cnt   = _code_stats.get("automation", 0)
+        _be_cnt     = _code_stats.get("backend", 0)
+        _fe_cnt     = _code_stats.get("frontend", 0)
+        _auto_sync  = _code_stats.get("automation_sync", {})
+        _be_sync    = _code_stats.get("backend_sync", {})
+        _fe_sync    = _code_stats.get("frontend_sync", {})
+
+        def _sync_badge(cnt, sync):
+            if cnt == 0:
+                return "⬜ Not indexed"
+            commit = sync.get("commit", "")
+            synced = sync.get("synced_at", "")
+            tag  = f" · `{commit}`" if commit else ""
+            date = f" · {synced}" if synced else ""
+            return f"✅ {cnt:,} chunks{tag}{date}"
+
+        st.markdown(
+            f"<div style='font-size:0.75rem;line-height:1.8'>"
+            f"<b>🧪 Automation:</b> {_sync_badge(_auto_cnt, _auto_sync)}<br>"
+            f"<b>🖥️ Backend:</b> {_sync_badge(_be_cnt, _be_sync)}<br>"
+            f"<b>🌐 Frontend:</b> {_sync_badge(_fe_cnt, _fe_sync)}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Automation Code ───────────────────────────────────────────────
+        with st.expander("🧪 Automation Code", expanded=(_auto_cnt == 0)):
+            _auto_default = config.AUTOMATION_CODEBASE_PATH or ""
+            _auto_path = st.text_input(
+                "Automation repo path",
+                value=st.session_state.get("automation_code_path", _auto_default),
+                placeholder="/Users/you/projects/tracking-test-automation",
+                key="automation_code_path_input",
+            )
+            st.caption("Spec files, POMs, helpers — used when writing automation scripts.")
+            _auto_branch = None
+            if _auto_path.strip():
+                _auto_repo = get_repo_info(_auto_path.strip())
+                if _auto_repo.get("branches"):
+                    _auto_branch = st.selectbox(
+                        "Branch to pull",
+                        options=_auto_repo["branches"],
+                        index=_auto_repo["branches"].index(_auto_repo["current_branch"])
+                              if _auto_repo["current_branch"] in _auto_repo["branches"] else 0,
+                        key="auto_branch_select",
+                    )
+                    st.caption(f"Current: `{_auto_repo['current_branch']}` @ `{_auto_repo['commit']}`")
+            _ac1, _ac2 = st.columns(2)
+            with _ac1:
+                if st.button("🔄 Pull & Sync", key="sync_auto_btn",
+                             use_container_width=True, type="primary",
+                             disabled=not _auto_path.strip()):
+                    st.session_state["automation_code_path"] = _auto_path.strip()
+                    with st.spinner("git pull → syncing…"):
+                        _res = sync_from_git(
+                            _auto_path.strip(), source_type="automation",
+                            branch=_auto_branch if _auto_branch != _auto_repo.get("current_branch") else None,
+                        )
+                    if _res.get("error"):
+                        st.error(f"❌ {_res['error']}")
+                    elif _res.get("message"):
+                        st.info(f"ℹ️ {_res['message']}")
+                    else:
+                        st.success(
+                            f"✅ `{_res['commit_before']}` → `{_res['commit_after']}` "
+                            f"| {_res['files_changed']} changed, {_res['chunks_updated']} chunks"
+                        )
+                    st.rerun()
+            with _ac2:
+                if st.button("📥 Full Re-index", key="index_auto_btn",
+                             use_container_width=True,
+                             disabled=not _auto_path.strip()):
+                    st.session_state["automation_code_path"] = _auto_path.strip()
+                    with st.spinner("Indexing all automation files…"):
+                        _res = index_codebase(
+                            _auto_path.strip(), source_type="automation",
+                            clear_existing=True, extensions=[".ts", ".tsx", ".js"],
+                        )
+                    if _res.get("error"):
+                        st.error(f"❌ {_res['error']}")
+                    else:
+                        st.success(f"✅ {_res['files_indexed']} files → {_res['chunks_added']} chunks")
+                    st.rerun()
+
+        # ── Backend Code ──────────────────────────────────────────────────
+        with st.expander("🖥️ Backend Code", expanded=(_be_cnt == 0)):
+            _be_path = st.text_input(
+                "Backend repo path",
+                value=st.session_state.get("backend_code_path", config.BACKEND_CODE_PATH or ""),
+                placeholder="/Users/you/projects/tracking-backend",
+                key="be_repo_path",
+            )
+            _be_branch = None
+            if _be_path.strip():
+                _be_repo = get_repo_info(_be_path.strip())
+                if _be_repo.get("branches"):
+                    _be_branch = st.selectbox(
+                        "Branch to pull",
+                        options=_be_repo["branches"],
+                        index=_be_repo["branches"].index(_be_repo["current_branch"])
+                              if _be_repo["current_branch"] in _be_repo["branches"] else 0,
+                        key="be_branch_select",
+                    )
+                    st.caption(f"Current: `{_be_repo['current_branch']}` @ `{_be_repo['commit']}`")
+            _bc1, _bc2 = st.columns(2)
+            with _bc1:
+                if st.button("🔄 Pull & Sync", key="sync_be_btn",
+                             use_container_width=True, type="primary",
+                             disabled=not _be_path.strip()):
+                    st.session_state["backend_code_path"] = _be_path.strip()
+                    with st.spinner("git pull → syncing…"):
+                        _res = sync_from_git(
+                            _be_path.strip(), source_type="backend",
+                            branch=_be_branch if _be_branch != _be_repo.get("current_branch") else None,
+                        )
+                    if _res.get("error"):
+                        st.error(f"❌ {_res['error']}")
+                    elif _res.get("message"):
+                        st.info(f"ℹ️ {_res['message']}")
+                    else:
+                        st.success(
+                            f"✅ `{_res['commit_before']}` → `{_res['commit_after']}` "
+                            f"| {_res['files_changed']} changed, {_res['chunks_updated']} chunks"
+                        )
+                    st.rerun()
+            with _bc2:
+                if st.button("📥 Full Re-index", key="index_be_btn",
+                             use_container_width=True,
+                             disabled=not _be_path.strip()):
+                    st.session_state["backend_code_path"] = _be_path.strip()
+                    with st.spinner("Indexing all backend files…"):
+                        _res = index_codebase(_be_path.strip(), source_type="backend", clear_existing=True)
+                    if _res.get("error"):
+                        st.error(f"❌ {_res['error']}")
+                    else:
+                        st.success(f"✅ {_res['files_indexed']} files → {_res['chunks_added']} chunks")
+                    st.rerun()
+
+        # ── Frontend Code ─────────────────────────────────────────────────
+        with st.expander("🌐 Frontend Code", expanded=False):
+            _fe_path = st.text_input(
+                "Frontend repo path",
+                value=st.session_state.get("frontend_code_path", config.FRONTEND_CODE_PATH or ""),
+                placeholder="/Users/you/projects/tracking-frontend",
+                key="fe_repo_path",
+            )
+            _fe_branch = None
+            if _fe_path.strip():
+                _fe_repo = get_repo_info(_fe_path.strip())
+                if _fe_repo.get("branches"):
+                    _fe_branch = st.selectbox(
+                        "Branch to pull",
+                        options=_fe_repo["branches"],
+                        index=_fe_repo["branches"].index(_fe_repo["current_branch"])
+                              if _fe_repo["current_branch"] in _fe_repo["branches"] else 0,
+                        key="fe_branch_select",
+                    )
+                    st.caption(f"Current: `{_fe_repo['current_branch']}` @ `{_fe_repo['commit']}`")
+            _fc1, _fc2 = st.columns(2)
+            with _fc1:
+                if st.button("🔄 Pull & Sync", key="sync_fe_btn",
+                             use_container_width=True, type="primary",
+                             disabled=not _fe_path.strip()):
+                    st.session_state["frontend_code_path"] = _fe_path.strip()
+                    with st.spinner("git pull → syncing…"):
+                        _res = sync_from_git(
+                            _fe_path.strip(), source_type="frontend",
+                            branch=_fe_branch if _fe_branch != _fe_repo.get("current_branch") else None,
+                        )
+                    if _res.get("error"):
+                        st.error(f"❌ {_res['error']}")
+                    elif _res.get("message"):
+                        st.info(f"ℹ️ {_res['message']}")
+                    else:
+                        st.success(
+                            f"✅ `{_res['commit_before']}` → `{_res['commit_after']}` "
+                            f"| {_res['files_changed']} changed, {_res['chunks_updated']} chunks"
+                        )
+                    st.rerun()
+            with _fc2:
+                if st.button("📥 Full Re-index", key="index_fe_btn",
+                             use_container_width=True,
+                             disabled=not _fe_path.strip()):
+                    st.session_state["frontend_code_path"] = _fe_path.strip()
+                    with st.spinner("Indexing all frontend files…"):
+                        _res = index_codebase(_fe_path.strip(), source_type="frontend", clear_existing=True)
+                    if _res.get("error"):
+                        st.error(f"❌ {_res['error']}")
+                    else:
+                        st.success(f"✅ {_res['files_indexed']} files → {_res['chunks_added']} chunks")
+                    st.rerun()
+
 
 # ---------------------------------------------------------------------------
 # Main
