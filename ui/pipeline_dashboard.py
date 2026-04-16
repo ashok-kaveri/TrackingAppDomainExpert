@@ -1198,6 +1198,126 @@ def main() -> None:
                             else:
                                 st.markdown(tc)
 
+                                # ── Run Generated Test Cases ────────────────────
+                                st.markdown("---")
+                                _step_header("3b", "▶️ Run Generated Test Cases")
+
+                                _run_key = f"run_tc_show_{card.id}"
+                                _results_key = f"run_tc_results_{card.id}"
+
+                                if not st.session_state.get(_run_key):
+                                    if st.button(
+                                        "▶️ Run Generated Test Cases",
+                                        key=f"run_tc_btn_{card.id}",
+                                        type="primary",
+                                        use_container_width=True,
+                                    ):
+                                        st.session_state[_run_key] = True
+                                        st.rerun()
+                                else:
+                                    with st.form(key=f"run_tc_form_{card.id}"):
+                                        st.markdown("**🌐 Enter App Details to Execute Test Cases**")
+                                        _tc_url = st.text_input(
+                                            "App URL",
+                                            placeholder="https://your-store.myshopify.com/admin",
+                                            key=f"tc_url_{card.id}",
+                                        )
+                                        _tc_col1, _tc_col2 = st.columns(2)
+                                        with _tc_col1:
+                                            _tc_user = st.text_input(
+                                                "Username / Email",
+                                                placeholder="admin@store.com",
+                                                key=f"tc_user_{card.id}",
+                                            )
+                                        with _tc_col2:
+                                            _tc_pass = st.text_input(
+                                                "Password",
+                                                type="password",
+                                                placeholder="••••••••",
+                                                key=f"tc_pass_{card.id}",
+                                            )
+                                        _tc_browser = st.checkbox(
+                                            "🖥️ Open Chrome browser (headful)",
+                                            value=True,
+                                            key=f"tc_browser_{card.id}",
+                                            help="Opens Chrome so you can follow along. Requires Playwright installed.",
+                                        )
+                                        _tc_col_run, _tc_col_cancel = st.columns(2)
+                                        with _tc_col_run:
+                                            _tc_submitted = st.form_submit_button(
+                                                "▶️ Execute Test Cases",
+                                                type="primary",
+                                                use_container_width=True,
+                                            )
+                                        with _tc_col_cancel:
+                                            _tc_cancelled = st.form_submit_button(
+                                                "✖ Cancel",
+                                                use_container_width=True,
+                                            )
+
+                                    if _tc_cancelled:
+                                        st.session_state[_run_key] = False
+                                        if _results_key in st.session_state:
+                                            del st.session_state[_results_key]
+                                        st.rerun()
+
+                                    if _tc_submitted:
+                                        if not _tc_url.strip():
+                                            st.warning("⚠️ Please enter the App URL to continue.")
+                                        else:
+                                            try:
+                                                from pipeline.tc_runner import run_test_cases
+                                                _tc_results_list: list = []
+                                                _tc_progress = st.progress(0, text="Parsing test cases…")
+                                                _parsed_count_holder = st.empty()
+
+                                                with st.spinner("🔍 Analysing and executing test cases…"):
+                                                    _tc_results_list = run_test_cases(
+                                                        test_cases_markdown=tc,
+                                                        app_url=_tc_url.strip(),
+                                                        username=_tc_user.strip(),
+                                                        password=_tc_pass.strip(),
+                                                        use_browser=_tc_browser,
+                                                    )
+
+                                                _tc_progress.progress(100, text="Done!")
+                                                st.session_state[_results_key] = _tc_results_list
+                                                st.rerun()
+                                            except Exception as _tc_err:
+                                                st.error(f"❌ Test run failed: {_tc_err}")
+
+                                    # Show results if available
+                                    _tc_results = st.session_state.get(_results_key)
+                                    if _tc_results:
+                                        st.markdown("#### 📊 Test Execution Results")
+                                        _pass = sum(1 for r in _tc_results if r.status == "PASS")
+                                        _fail = sum(1 for r in _tc_results if r.status == "FAIL")
+                                        _skip = sum(1 for r in _tc_results if r.status in ("SKIP", "ERROR"))
+                                        _total = len(_tc_results)
+
+                                        _rm1, _rm2, _rm3, _rm4 = st.columns(4)
+                                        _rm1.metric("Total", _total)
+                                        _rm2.metric("✅ Pass", _pass)
+                                        _rm3.metric("❌ Fail", _fail)
+                                        _rm4.metric("⏭️ Skip/Error", _skip)
+
+                                        st.markdown("---")
+                                        for _tr in _tc_results:
+                                            _status_icon = {"PASS": "✅", "FAIL": "❌", "SKIP": "⏭️", "ERROR": "⚠️"}.get(_tr.status, "❓")
+                                            with st.expander(f"{_status_icon} {_tr.tc_name}", expanded=_tr.status == "FAIL"):
+                                                st.markdown(f"**Status:** `{_tr.status}`")
+                                                if _tr.notes:
+                                                    st.markdown(f"**Notes:** {_tr.notes}")
+                                                if _tr.steps_executed:
+                                                    st.markdown("**Steps executed:**")
+                                                    for _s in _tr.steps_executed:
+                                                        st.caption(f"• {_s}")
+
+                                        if st.button("🔄 Re-run", key=f"rerun_tc_{card.id}"):
+                                            del st.session_state[_results_key]
+                                            st.rerun()
+
+                                st.markdown("---")
                                 col_fb, col_regen = st.columns([3, 1])
                                 with col_fb:
                                     feedback = st.text_input(
