@@ -1193,9 +1193,7 @@ def main() -> None:
                                     if st.button("🤖 Generate Test Cases", key=f"gen_tc_{card.id}",
                                                  use_container_width=True, type="primary"):
                                         with st.spinner("Claude is generating test cases…"):
-                                            tc_store[card.id] = generate_test_cases(
-                                                card, extra_context=extra_ctx
-                                            )
+                                            tc_store[card.id] = generate_test_cases(card)
                                         st.rerun()
                             else:
                                 st.markdown(tc)
