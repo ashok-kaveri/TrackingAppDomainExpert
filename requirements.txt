@@ -24,6 +24,9 @@ requests>=2.32.3
 # PDF ingestion
 pdfplumber>=0.11.0
 
+# PDF generation (handoff Support Guide / Business Brief)
+reportlab>=4.2.0
+
 # Google Sheets
 gspread>=6.1.2
 google-auth>=2.35.0

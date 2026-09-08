@@ -29,6 +29,30 @@ Main capability:
 | `rag/prompts.py` | Domain expert system prompt |
 | `ui/chat_app.py` | Streamlit Domain Expert chat UI |
 | `api/server.py` | FastAPI REST API server |
+| `pipeline/handoff_docs.py` | Release Support Guide / Business Brief generation + handoff PDF renderer |
+| `scripts/send_handoff_pdf_to_slack.py` | Sends a rendered handoff PDF to Slack (dry-run unless `--yes`) |
+| `skills/trackingapp-handoff-docs/` | Skill: release handoff doc format, guardrails, PDF render script |
+
+---
+
+## Release Handoff Docs (Support Guide / Business Brief)
+
+Generated from a Trello release lane. The PDF styling is shared with the MCSL / FedEx / AU Post
+repos — `pipeline/handoff_docs.py` holds a copy of the same renderer, and only `PDF_BRAND`
+("PluginHive Tracking App") plus the domain parts (app navigation, carrier detection, prompts)
+differ here. Read `skills/trackingapp-handoff-docs/SKILL.md` before generating one.
+
+```bash
+# 1. Render markdown -> styled PDF
+PYTHONPATH=. .venv/bin/python skills/trackingapp-handoff-docs/scripts/render_handoff_pdf.py \
+  --markdown data/handoff_docs/<name>.md --title "<doc title>" --out data/handoff_docs/<name>.pdf
+
+# 2. Deliver to Slack — dry run first, then --yes. Bare --channel = qa_members_internal
+PYTHONPATH=. .venv/bin/python scripts/send_handoff_pdf_to_slack.py \
+  --pdf data/handoff_docs/<name>.pdf --title "<doc title>" --channel --yes
+```
+
+Markdown and PDF both live in `data/handoff_docs/`.
 
 ---
 
